@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>The Riddle Crest</title>
+    <link rel="stylesheet" href="style.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+</head>
+<body>
+    <div id="game-container">
+        <!-- Intro Screen -->
+        <section id="intro-screen" class="screen active">
+            <div class="card">
+                <h1><i class="fas fa-crown"></i> The Riddle Crest</h1>
+                <div class="rules">
+                    <h2><i class="fas fa-scroll"></i> Challenge Rules</h2>
+                    <ul>
+                        <li><i class="fas fa-brain"></i> <strong>10 riddles</strong> await, increasing in difficulty</li>
+                        <li><i class="fas fa-lightbulb"></i> Each riddle has <strong>one hint</strong> - use them wisely!</li>
+                        <li><i class="fas fa-eye-slash"></i> <strong>No immediate feedback</strong> - answers revealed at the end</li>
+                        <li><i class="fas fa-pen"></i> Submit answers to proceed to the next riddle</li>
+                        <li><i class="fas fa-chart-line"></i> Score based on <strong>accuracy</strong> and <strong>hint usage</strong></li>
+                    </ul>
+                    <div class="scoring">
+                        <h3><i class="fas fa-star"></i> Scoring System</h3>
+                        <p>✅ Correct answer: <strong>+10 points</strong></p>
+                        <p>💡 Hint used: <strong>-2 points</strong> (per hint)</p>
+                        <p>🏆 Maximum score: <strong>100 points</strong></p>
+                    </div>
+                </div>
+                <button id="start-btn" class="btn-primary">
+                    <i class="fas fa-play"></i> Ready to Start
+                </button>
+            </div>
+        </section>
+
+        <!-- Game Screen -->
+        <section id="game-screen" class="screen">
+            <header class="game-header">
+                <div class="progress">
+                    <div class="progress-bar">
+                        <div class="progress-fill" id="progress-fill"></div>
+                    </div>
+                    <span id="progress-text">Riddle 1/10</span>
+                </div>
+                <div class="stats">
+                    <span class="stat"><i class="fas fa-lightbulb"></i> Hints: <span id="hint-count">0</span></span>
+                    <span class="stat"><i class="fas fa-brain"></i> Score: <span id="score-preview">0</span></span>
+                </div>
+            </header>
+
+            <main class="game-main">
+                <div class="riddle-card">
+                    <h2 id="riddle-question">Loading riddle...</h2>
+                    
+                    <div class="hint-section">
+                        <button id="hint-btn" class="btn-hint">
+                            <i class="fas fa-lightbulb"></i> Need a hint?
+                        </button>
+                        <div id="hint-display" class="hint-display"></div>
+                    </div>
+
+                    <div class="answer-section">
+                        <input 
+                            type="text" 
+                            id="answer-input" 
+                            placeholder="Type your answer here..."
+                            autocomplete="off"
+                        >
+                        <button id="submit-btn" class="btn-submit">
+                            <i class="fas fa-arrow-right"></i> Submit Answer
+                        </button>
+                    </div>
+
+                    <div class="navigation">
+                        <button id="prev-btn" class="btn-secondary" disabled>
+                            <i class="fas fa-arrow-left"></i> Previous
+                        </button>
+                        <button id="next-btn" class="btn-secondary">
+                            Next <i class="fas fa-arrow-right"></i>
+                        </button>
+                    </div>
+                </div>
+            </main>
+        </section>
+
+        <!-- Results Screen -->
+        <section id="results-screen" class="screen">
+            <div class="card">
+                <h1><i class="fas fa-trophy"></i> Challenge Complete!</h1>
+                
+                <div class="score-display">
+                    <div class="score-circle">
+                        <span id="final-score">0</span>
+                        <div class="score-label">/100</div>
+                    </div>
+                    
+                    <h2 id="performance-title">Analyzing...</h2>
+                    <p id="performance-description" class="performance-desc"></p>
+                </div>
+
+                <div class="results-grid">
+                    <div class="result-card">
+                        <h3><i class="fas fa-check-circle"></i> Correct Answers</h3>
+                        <div class="result-value" id="correct-count">0</div>
+                        <p>out of 10 riddles</p>
+                    </div>
+                    
+                    <div class="result-card">
+                        <h3><i class="fas fa-lightbulb"></i> Hints Used</h3>
+                        <div class="result-value" id="final-hints">0</div>
+                        <p>points deducted: <span id="hint-penalty">0</span></p>
+                    </div>
+                    
+                    <div class="result-card">
+                        <h3><i class="fas fa-chart-line"></i> Performance</h3>
+                        <div class="result-value" id="performance-tier">-</div>
+                        <p id="performance-message">Calculating...</p>
+                    </div>
+                </div>
+
+                <div class="answers-review">
+                    <h3><i class="fas fa-list-check"></i> Your Answers</h3>
+                    <div id="answers-list"></div>
+                </div>
+
+                <div class="action-buttons">
+                    <button id="play-again-btn" class="btn-primary">
+                        <i class="fas fa-redo"></i> Play Again
+                    </button>
+                    <button id="view-intro-btn" class="btn-secondary">
+                        <i class="fas fa-home"></i> Back to Intro
+                    </button>
+                </div>
+            </div>
+        </section>
+    </div>
+
+    <script src="script.js"></script>
+</body>
+</html>
