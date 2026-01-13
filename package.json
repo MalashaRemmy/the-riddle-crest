@@ -1,0 +1,30 @@
+{
+  "name": "riddle-crest",
+  "version": "1.0.0",
+  "description": "A brain training riddle game",
+  "main": "index.html",
+  "scripts": {
+    "start": "http-server -c-1 -p 8080",
+    "build": "echo 'No build step needed'",
+    "android": "npx cap add android && npx cap copy android && npx cap open android",
+    "ios": "npx cap add ios && npx cap copy ios && npx cap open ios"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "@capacitor/cli": "^5.0.0",
+    "@capacitor/core": "^5.0.0",
+    "@capacitor/android": "^5.0.0",
+    "@capacitor/ios": "^5.0.0",
+    "http-server": "^14.1.1"
+  },
+  "author": "Your Name",
+  "license": "MIT",
+  "capacitor": {
+    "ios": {
+      "minVersion": "13.0"
+    },
+    "android": {
+      "minVersion": "22"
+    }
+  }
+}

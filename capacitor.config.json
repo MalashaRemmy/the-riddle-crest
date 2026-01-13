@@ -1,0 +1,10 @@
+{
+  "appId": "com.yourcompany.riddlecrest",
+  "appName": "Riddle Crest",
+  "webDir": "./",
+  "bundledWebRuntime": false,
+  "server": {
+    "url": "http://localhost:8080",
+    "cleartext": true
+  }
+}

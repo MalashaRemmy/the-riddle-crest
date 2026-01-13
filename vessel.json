@@ -1,0 +1,39 @@
+{
+  "name": "riddle-crest-pro",
+  "displayName": "Riddle Crest Pro",
+  "version": "1.0.0",
+  "description": "Brain training puzzle game",
+  "main": "index.html",
+  "author": "Your Name",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/yourusername/riddle-crest"
+  },
+  "android": {
+    "package": "com.yourcompany.riddlecrest",
+    "versionCode": 1,
+    "permissions": [
+      "INTERNET",
+      "ACCESS_NETWORK_STATE"
+    ],
+    "icon": "icons/icon-512.png",
+    "adaptiveIcon": {
+      "foreground": "icons/icon-foreground.png",
+      "background": "icons/icon-background.png"
+    },
+    "splashScreen": {
+      "backgroundColor": "#1a1a2e",
+      "resizeable": false
+    }
+  },
+  "ios": {
+    "bundleIdentifier": "com.yourcompany.riddlecrest",
+    "version": "1.0.0",
+    "icon": "icons/icon-1024.png",
+    "splashScreen": {
+      "backgroundColor": "#1a1a2e"
+    }
+  },
+  "plugins": []
+}

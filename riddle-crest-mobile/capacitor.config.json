@@ -1,0 +1,6 @@
+﻿{
+  "appId": "com.yourcompany.riddlecrest",
+  "appName": "Riddle Crest",
+  "webDir": "www",
+  "bundledWebRuntime": false
+}
