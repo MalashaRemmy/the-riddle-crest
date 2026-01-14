@@ -9,11 +9,10 @@
     "android": "npx cap add android && npx cap copy android && npx cap open android",
     "ios": "npx cap add ios && npx cap copy ios && npx cap open ios"
   },
-  "dependencies": {},
   "devDependencies": {
+    "@capacitor/android": "^5.0.0",
     "@capacitor/cli": "^5.0.0",
     "@capacitor/core": "^5.0.0",
-    "@capacitor/android": "^5.0.0",
     "@capacitor/ios": "^5.0.0",
     "http-server": "^14.1.1"
   },
