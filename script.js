@@ -8,7 +8,7 @@ const CONFIG = {
     POINTS_PER_CORRECT: 10,
     POINTS_PER_HINT: -2,
     PERFECT_ROUND_BONUS: 50,
-    MAX_TOTAL_SCORE: 550,
+    MAX_TOTAL_SCORE: 750,
     OTP_LENGTH: 6,
     OTP_TIMEOUT: 60, // seconds
     STORAGE_KEY: 'riddleCrestPro_v1',
@@ -362,9 +362,9 @@ const GameState = {
         lastPlayed: null
     },
     
-    // Initialize state
-    init: function() {
-        this.loadFromStorage();
+    // Initialize state (async because loadFromStorage may hit Firestore)
+    init: async function() {
+        await this.loadFromStorage();
         this.session.sessionStart = Date.now();
         
         if (!this.session.userId) {
@@ -412,6 +412,11 @@ const GameState = {
     
     // Submit answer for current question
     submitAnswer: function(answer, usedHint = false) {
+        // Guard: reject submissions after round is already complete
+        if (this.currentRoundState.endTime || this.currentRoundState.userAnswers.length >= CONFIG.QUESTIONS_PER_ROUND) {
+            return 'complete';
+        }
+
         const currentQuestion = this.getCurrentQuestion();
         
         const answerObj = {
@@ -449,57 +454,84 @@ const GameState = {
         return this.currentRoundState.questions[this.currentQuestionIndex];
     },
     
-    // Calculate score for current round
-    calculateRoundScore: function() {
+    // Non-mutating snapshot of the current round results (safe for repeated UI renders)
+    getCurrentRoundResultsSnapshot: function() {
         const round = this.currentRoundState;
         let correctCount = 0;
-        
+
         round.userAnswers.forEach(answer => {
             if (answer.isCorrect) correctCount++;
         });
-        
+
         const baseScore = correctCount * CONFIG.POINTS_PER_CORRECT;
         const hintPenalty = round.hintsUsed * Math.abs(CONFIG.POINTS_PER_HINT);
         let roundScore = baseScore - hintPenalty;
-        
+
         // Add perfect round bonus
         if (correctCount === CONFIG.QUESTIONS_PER_ROUND) {
             roundScore += CONFIG.PERFECT_ROUND_BONUS;
         }
-        
+
         // Ensure score is non-negative
         roundScore = Math.max(0, roundScore);
-        
-        // Update overall progress
-        this.overallProgress.roundScores[round.roundNumber] = {
-            score: roundScore,
-            correct: correctCount,
-            hints: round.hintsUsed,
-            time: round.endTime - round.startTime,
-            isReplay: round.isReplay
-        };
-        
-        this.overallProgress.totalCorrect += correctCount;
-        this.overallProgress.totalQuestions += CONFIG.QUESTIONS_PER_ROUND;
-        this.overallProgress.totalHintsUsed += round.hintsUsed;
-        this.overallProgress.totalRoundsCompleted++;
-        this.overallProgress.totalPlayTime += (round.endTime - round.startTime);
-        this.overallProgress.lastPlayed = Date.now();
-        
-        // Update best score
-        const totalScore = this.getTotalScore();
-        if (totalScore > this.overallProgress.bestScore) {
-            this.overallProgress.bestScore = totalScore;
-        }
-        
+
         return {
             roundScore,
             correctCount,
             hintCount: round.hintsUsed,
             hintPenalty,
             perfectBonus: correctCount === CONFIG.QUESTIONS_PER_ROUND ? CONFIG.PERFECT_ROUND_BONUS : 0,
-            timeTaken: round.endTime - round.startTime
+            timeTaken: round.endTime && round.startTime ? (round.endTime - round.startTime) : 0
         };
+    },
+    
+    // Calculate score for current round
+    calculateRoundScore: function() {
+        const roundResults = this.getCurrentRoundResultsSnapshot();
+        const round = this.currentRoundState;
+        
+        // Update overall progress
+        this.overallProgress.roundScores[round.roundNumber] = {
+            score: roundResults.roundScore,
+            correct: roundResults.correctCount,
+            hints: round.hintsUsed,
+            time: round.endTime - round.startTime,
+            isReplay: round.isReplay
+        };
+
+        this.recalculateOverallProgressAggregates();
+        this.overallProgress.lastPlayed = Date.now();
+
+        return roundResults;
+    },
+
+    // Recalculate aggregate stats from roundScores (prevents double counting on re-renders/replays)
+    recalculateOverallProgressAggregates: function() {
+        const roundScores = this.overallProgress.roundScores;
+
+        let totalRoundsCompleted = 0;
+        let totalCorrect = 0;
+        let totalQuestions = 0;
+        let totalHintsUsed = 0;
+        let totalPlayTime = 0;
+
+        Object.values(roundScores).forEach((roundData) => {
+            if (!roundData) return;
+            totalRoundsCompleted++;
+            totalCorrect += Number(roundData.correct || 0);
+            totalQuestions += CONFIG.QUESTIONS_PER_ROUND;
+            totalHintsUsed += Number(roundData.hints || 0);
+            totalPlayTime += Number(roundData.time || 0);
+        });
+
+        this.overallProgress.totalRoundsCompleted = totalRoundsCompleted;
+        this.overallProgress.totalCorrect = totalCorrect;
+        this.overallProgress.totalQuestions = totalQuestions;
+        this.overallProgress.totalHintsUsed = totalHintsUsed;
+        this.overallProgress.totalPlayTime = totalPlayTime;
+
+        const totalScore = this.getTotalScore();
+        this.overallProgress.bestScore = Math.max(this.overallProgress.bestScore || 0, totalScore);
     },
     
     // Get total cumulative score
@@ -513,7 +545,8 @@ const GameState = {
     
     // Get performance tier
     getPerformanceTier: function(totalScore) {
-        const percentage = (totalScore / (CONFIG.TOTAL_ROUNDS * 100)) * 100;
+        const maxPerRound = (CONFIG.QUESTIONS_PER_ROUND * CONFIG.POINTS_PER_CORRECT) + CONFIG.PERFECT_ROUND_BONUS;
+        const percentage = (totalScore / (CONFIG.TOTAL_ROUNDS * maxPerRound)) * 100;
         
         if (percentage >= 90) return { tier: 'S+', title: 'Riddle Master', color: '#ffd700', message: 'Legendary! You have mastered the art of riddles.' };
         if (percentage >= 80) return { tier: 'S', title: 'Grandmaster', color: '#c0c0c0', message: 'Outstanding performance across all rounds!' };
@@ -561,7 +594,8 @@ const GameState = {
         this.saveToStorage();
     },
     
-    // Save state to localStorage
+    // Save state — writes to Firestore (via RCDatabase) and localStorage mirror.
+    // Called frequently (answer submit, round complete, etc.), so it's fire-and-forget.
     saveToStorage: function() {
         try {
             const data = {
@@ -571,35 +605,52 @@ const GameState = {
                 overallProgress: this.overallProgress,
                 timestamp: Date.now()
             };
+            // Synchronous localStorage mirror (fast, offline-safe)
             localStorage.setItem(CONFIG.STORAGE_KEY, JSON.stringify(data));
+            // Async Firestore write (non-blocking)
+            if (typeof RCDatabase !== 'undefined') {
+                RCDatabase.save(data).catch((e) => {
+                    console.warn('[GameState] Firestore save failed:', e.message);
+                });
+            }
         } catch (e) {
             console.error('Failed to save game state:', e);
         }
     },
     
-    // Load state from localStorage
-    loadFromStorage: function() {
+    // Load state — tries Firestore first (via RCDatabase), falls back to localStorage.
+    // Returns a Promise so callers can await the result.
+    loadFromStorage: async function() {
         try {
-            const data = JSON.parse(localStorage.getItem(CONFIG.STORAGE_KEY));
+            let data = null;
+            // Try Firestore first (returns localStorage fallback if offline)
+            if (typeof RCDatabase !== 'undefined') {
+                data = await RCDatabase.load();
+            }
+            // Fallback to raw localStorage if RCDatabase unavailable
+            if (!data) {
+                const raw = localStorage.getItem(CONFIG.STORAGE_KEY);
+                if (raw) data = JSON.parse(raw);
+            }
             if (data) {
-                this.session = data.session || this.session;
+                // Restore game progress (not session — that's handled by Firebase Auth)
                 this.currentRound = data.currentRound || this.currentRound;
                 this.roundReplays = data.roundReplays || this.roundReplays;
                 this.overallProgress = data.overallProgress || this.overallProgress;
-                
-                // Check if session expired
-                if (data.timestamp && Date.now() - data.timestamp > CONFIG.SESSION_TIMEOUT) {
-                    this.session.isLoggedIn = false;
-                }
             }
         } catch (e) {
             console.error('Failed to load game state:', e);
         }
     },
     
-    // Clear storage (logout)
+    // Clear storage (logout) — removes Firestore data and localStorage
     clearStorage: function() {
         localStorage.removeItem(CONFIG.STORAGE_KEY);
+        if (typeof RCDatabase !== 'undefined') {
+            RCDatabase.deleteProgress().catch((e) => {
+                console.warn('[GameState] Firestore delete failed:', e.message);
+            });
+        }
         this.session = {
             userId: null,
             email: null,
@@ -699,7 +750,14 @@ const Elements = {
     loginPassword: document.getElementById('login-password'),
     signupEmail: document.getElementById('signup-email'),
     signupPhone: document.getElementById('signup-phone'),
+    signupPassword: document.getElementById('signup-password'),
+    signupConfirmPassword: document.getElementById('signup-confirm-password'),
+    loginSubmitBtn: document.getElementById('login-submit-btn'),
+    signupSubmitBtn: document.getElementById('signup-submit-btn'),
+    forgotPasswordLink: document.getElementById('forgot-password-link'),
     guestLoginBtn: document.getElementById('guest-login'),
+    guestConvertBanner: document.getElementById('guest-convert-banner'),
+    guestConvertBtn: document.getElementById('guest-convert-btn'),
     backToSignupBtn: document.getElementById('back-to-signup'),
     
     // OTP
@@ -782,9 +840,10 @@ const Elements = {
 const Renderer = {
     // Show specific screen
     showScreen: function(screenName) {
-        // Hide all screens
+        // Hide all screens (skip loading screen — it's managed by hideLoadingScreen)
+        const loadingEl = document.getElementById('loading-screen');
         Object.values(Elements).forEach(element => {
-            if (element && element.classList && element.classList.contains('screen')) {
+            if (element && element.classList && element.classList.contains('screen') && element !== loadingEl) {
                 element.classList.remove('active');
             }
         });
@@ -804,6 +863,13 @@ const Renderer = {
         if (screenElement) {
             screenElement.classList.add('active');
             
+            // Toggle bottom nav visibility (hide on loading/auth screens)
+            const bottomNav = document.querySelector('.bottom-nav');
+            if (bottomNav) {
+                const hideNav = ['loading', 'login', 'otp'].includes(screenName);
+                bottomNav.classList.toggle('hidden', hideNav);
+            }
+            
             // Update bottom nav active state
             Elements.navButtons.forEach(btn => {
                 btn.classList.remove('active');
@@ -822,10 +888,14 @@ const Renderer = {
         if (user.email && !user.isGuest) {
             const username = user.email.split('@')[0];
             Elements.userGreeting.textContent = `Welcome back, ${username}!`;
-            Elements.userStatus.textContent = `Playing since ${new Date(user.sessionStart).toLocaleDateString()}`;
+            const userStatusText = document.createTextNode(`Playing since ${new Date(user.sessionStart).toLocaleDateString()}`);
+            Elements.userStatus.textContent = '';
+            Elements.userStatus.appendChild(userStatusText);
         } else {
             Elements.userGreeting.textContent = 'Welcome, Guest Player!';
-            Elements.userStatus.textContent = 'Play as guest - progress saved locally';
+            const userStatusText = document.createTextNode('Play as guest - progress saved locally');
+            Elements.userStatus.textContent = '';
+            Elements.userStatus.appendChild(userStatusText);
         }
         
         // Update round info
@@ -834,7 +904,12 @@ const Renderer = {
         Elements.bestScoreDisplay.textContent = GameState.overallProgress.bestScore;
         
         // Update start button text
-        Elements.startBtn.innerHTML = `<i class="fas fa-play"></i> Start Round ${GameState.currentRound}`;
+        Elements.startBtn.textContent = '';
+        const playIcon = document.createElement('i');
+        playIcon.className = 'fas fa-play';
+        Elements.startBtn.appendChild(playIcon);
+        const startBtnText = document.createTextNode(` Start Round ${GameState.currentRound}`);
+        Elements.startBtn.appendChild(startBtnText);
         
         // Update round dots
         Elements.roundDots.forEach(dot => {
@@ -907,7 +982,7 @@ const Renderer = {
     
     // Update round complete screen
     updateRoundCompleteScreen: function() {
-        const roundResults = GameState.calculateRoundScore();
+        const roundResults = GameState.getCurrentRoundResultsSnapshot();
         const totalScore = GameState.getTotalScore();
         const nextRound = GameState.getNextRoundNumber();
         const isReplay = GameState.currentRoundState.isReplay;
@@ -926,13 +1001,19 @@ const Renderer = {
         
         // Update next round button
         Elements.nextRoundNumber.textContent = nextRound;
-        Elements.nextRoundBtn.innerHTML = `<i class="fas fa-forward"></i> Continue to Round ${nextRound}`;
+        Elements.nextRoundBtn.textContent = '';
+        const fwdIcon = document.createElement('i');
+        fwdIcon.className = 'fas fa-forward';
+        Elements.nextRoundBtn.appendChild(fwdIcon);
+        const nextRoundBtnText = document.createTextNode(` Continue to Round ${nextRound}`);
+        Elements.nextRoundBtn.appendChild(nextRoundBtnText);
         
         // Show/hide progression warning for replays
         if (isReplay) {
             Elements.progressionWarning.style.display = 'flex';
-            Elements.progressionWarning.querySelector('p').textContent = 
-                `This is replay #${GameState.roundReplays[GameState.currentRound]}. Playing again will use different questions.`;
+            const progressionWarningText = document.createTextNode(`This is replay #${GameState.roundReplays[GameState.currentRound]}. Playing again will use different questions.`);
+            Elements.progressionWarning.querySelector('p').textContent = '';
+            Elements.progressionWarning.querySelector('p').appendChild(progressionWarningText);
         } else {
             Elements.progressionWarning.style.display = 'none';
         }
@@ -943,6 +1024,8 @@ const Renderer = {
         } else {
             Elements.nextRoundBtn.style.display = 'none';
         }
+
+        return roundResults;
     },
     
     // Update final results screen
@@ -981,8 +1064,9 @@ const Renderer = {
         // Update warning based on replay count
         const maxReplayCount = Math.max(...Object.values(GameState.roundReplays));
         if (maxReplayCount >= 2) {
-            Elements.finalWarning.querySelector('p').textContent = 
-                'You\'ve replayed several rounds. Starting fresh will reset all progress.';
+            const finalWarningText = document.createTextNode('You\'ve replayed several rounds. Starting fresh will reset all progress.');
+            Elements.finalWarning.querySelector('p').textContent = '';
+            Elements.finalWarning.querySelector('p').appendChild(finalWarningText);
         }
     },
     
@@ -1033,12 +1117,19 @@ const Renderer = {
     showToast: function(message, type = 'info', duration = 3000) {
         const toast = document.createElement('div');
         toast.className = `toast ${type}`;
-        toast.innerHTML = `
-            <div class="toast-content">
-                <i class="fas fa-${this.getToastIcon(type)}"></i>
-                <span>${message}</span>
-            </div>
-        `;
+
+        const content = document.createElement('div');
+        content.className = 'toast-content';
+
+        const icon = document.createElement('i');
+        icon.className = `fas fa-${this.getToastIcon(type)}`;
+
+        const text = document.createElement('span');
+        text.textContent = String(message);
+
+        content.appendChild(icon);
+        content.appendChild(text);
+        toast.appendChild(content);
         
         Elements.toastContainer.appendChild(toast);
         
@@ -1070,27 +1161,9 @@ const Renderer = {
     // Update OTP input UI
     updateOTPInput: function() {
         let otp = '';
-        Elements.otpDigits.forEach((digit, index) => {
+        Elements.otpDigits.forEach((digit) => {
             otp += digit.value;
             digit.classList.toggle('filled', digit.value !== '');
-            
-            // Auto-focus next input
-            digit.addEventListener('input', (e) => {
-                if (e.target.value && index < Elements.otpDigits.length - 1) {
-                    Elements.otpDigits[index + 1].focus();
-                }
-                
-                // Check if OTP is complete
-                const completeOTP = Array.from(Elements.otpDigits).map(d => d.value).join('');
-                Elements.verifyOtpBtn.disabled = completeOTP.length !== CONFIG.OTP_LENGTH;
-            });
-            
-            // Handle backspace
-            digit.addEventListener('keydown', (e) => {
-                if (e.key === 'Backspace' && !e.target.value && index > 0) {
-                    Elements.otpDigits[index - 1].focus();
-                }
-            });
         });
         
         return otp;
@@ -1113,7 +1186,14 @@ const EventHandlers = {
         this.initNavigationEvents();
     },
     
-    // Authentication events
+    // Helper: toggle loading spinner on auth buttons
+    _setAuthLoading: function(btn, loading) {
+        if (!btn) return;
+        btn.disabled = loading;
+        btn.classList.toggle('loading', loading);
+    },
+
+    // Authentication events (Firebase Auth backed)
     initAuthEvents: function() {
         // Tab switching
         Elements.authTabs.forEach(tab => {
@@ -1138,135 +1218,162 @@ const EventHandlers = {
             });
         });
         
-        // Guest login
-        Elements.guestLoginBtn.addEventListener('click', () => {
-            GameState.session.isGuest = true;
-            GameState.session.isLoggedIn = true;
-            GameState.saveToStorage();
-            
-            Renderer.showToast('Logged in as guest', 'success');
-            setTimeout(() => {
-                Renderer.showScreen('intro');
-                Renderer.updateIntroScreen();
-            }, 1000);
+        // Guest login via Firebase anonymous auth
+        Elements.guestLoginBtn.addEventListener('click', async () => {
+            this._setAuthLoading(Elements.guestLoginBtn, true);
+            const result = await RCAuth.guestLogin();
+            this._setAuthLoading(Elements.guestLoginBtn, false);
+
+            if (result.success) {
+                // Session will be set by onAuthStateChanged handler
+                Renderer.showToast('Playing as guest', 'success');
+            } else {
+                Renderer.showToast(result.error, 'error');
+            }
         });
         
-        // Signup form submission
-        Elements.signupForm.addEventListener('submit', (e) => {
+        // Signup form submission — Firebase create account
+        Elements.signupForm.addEventListener('submit', async (e) => {
             e.preventDefault();
             
             const email = Elements.signupEmail.value.trim();
             const phone = Elements.signupPhone.value.trim();
+            const password = Elements.signupPassword ? Elements.signupPassword.value : '';
+            const confirmPassword = Elements.signupConfirmPassword ? Elements.signupConfirmPassword.value : '';
             
             if (!this.validateEmail(email)) {
                 Renderer.showToast('Please enter a valid email', 'error');
                 return;
             }
             
-            if (!this.validatePhone(phone)) {
+            if (phone && !this.validatePhone(phone)) {
                 Renderer.showToast('Please enter a valid phone number', 'error');
                 return;
             }
-            
-            // Generate and send OTP (simulated)
-            const otp = AuthManager.generateOTP();
-            GameState.session.email = email;
-            GameState.session.phone = phone;
-            
-            // Mask phone for display
-            const maskedPhone = phone.replace(/(\d{3})\d{4}(\d{3})/, '$1•••$2');
-            Elements.phoneMaskDisplay.textContent = maskedPhone;
-            
-            // Start OTP timer
-            AuthManager.startOTPTimer((seconds) => {
-                Renderer.updateOTPTimer(seconds);
-            });
-            
-            // Show OTP screen
-            Renderer.showScreen('otp');
-            
-            // Focus first OTP digit
-            setTimeout(() => {
-                Elements.otpDigits[0].focus();
-            }, 100);
-            
-            // Show success message (simulated)
-            Renderer.showToast(`OTP sent to ${maskedPhone}: ${otp}`, 'info', 5000);
-        });
-        
-        // OTP verification
-        Elements.verifyOtpBtn.addEventListener('click', () => {
-            const otp = Array.from(Elements.otpDigits).map(d => d.value).join('');
-            
-            if (AuthManager.verifyOTP(otp)) {
-                GameState.session.isGuest = false;
-                GameState.session.isLoggedIn = true;
-                GameState.session.otpVerified = true;
-                GameState.saveToStorage();
-                
-                AuthManager.resetOTP();
-                
-                Renderer.showToast('Account verified successfully!', 'success');
-                setTimeout(() => {
-                    Renderer.showScreen('intro');
-                    Renderer.updateIntroScreen();
-                }, 1000);
+
+            if (!password || password.length < 6) {
+                Renderer.showToast('Password must be at least 6 characters', 'error');
+                return;
+            }
+
+            if (password !== confirmPassword) {
+                Renderer.showToast('Passwords do not match', 'error');
+                return;
+            }
+
+            this._setAuthLoading(Elements.signupSubmitBtn, true);
+            const result = await RCAuth.signUp(email, password, phone);
+            this._setAuthLoading(Elements.signupSubmitBtn, false);
+
+            if (result.success) {
+                Renderer.showToast('Account created! A verification email has been sent.', 'success');
+                // onAuthStateChanged will handle navigation
             } else {
-                Renderer.showToast('Invalid OTP. Please try again.', 'error');
+                Renderer.showToast(result.error, 'error');
             }
         });
         
-        // Resend OTP
-        Elements.resendOtpBtn.addEventListener('click', () => {
-            if (Elements.resendOtpBtn.disabled) return;
-            
-            const otp = AuthManager.generateOTP();
-            AuthManager.startOTPTimer((seconds) => {
-                Renderer.updateOTPTimer(seconds);
-            });
-            
-            Renderer.showToast(`New OTP sent: ${otp}`, 'info', 5000);
-        });
-        
-        // Back to signup
-        Elements.backToSignupBtn.addEventListener('click', () => {
-            AuthManager.resetOTP();
-            Renderer.showScreen('login');
-        });
-        
-        // Login form submission
-        Elements.loginForm.addEventListener('submit', (e) => {
+        // Login form submission — Firebase email/password auth
+        Elements.loginForm.addEventListener('submit', async (e) => {
             e.preventDefault();
             
             const email = Elements.loginEmail.value.trim();
             const password = Elements.loginPassword.value.trim();
             
-            // Simulated login (in real app, would call backend)
-            if (email && password) {
-                GameState.session.email = email;
-                GameState.session.isGuest = false;
-                GameState.session.isLoggedIn = true;
-                GameState.saveToStorage();
-                
-                Renderer.showToast('Login successful!', 'success');
-                setTimeout(() => {
-                    Renderer.showScreen('intro');
-                    Renderer.updateIntroScreen();
-                }, 1000);
-            } else {
+            if (!email || !password) {
                 Renderer.showToast('Please fill all fields', 'error');
+                return;
+            }
+
+            this._setAuthLoading(Elements.loginSubmitBtn, true);
+            const result = await RCAuth.logIn(email, password);
+            this._setAuthLoading(Elements.loginSubmitBtn, false);
+
+            if (result.success) {
+                Renderer.showToast('Login successful!', 'success');
+                // onAuthStateChanged will handle navigation
+            } else {
+                Renderer.showToast(result.error, 'error');
             }
         });
-        
-        // Logout
-        Elements.logoutBtn.addEventListener('click', () => {
-            GameState.clearStorage();
-            GameState.init();
-            Renderer.showToast('Logged out successfully', 'success');
-            setTimeout(() => {
+
+        // Forgot password link
+        if (Elements.forgotPasswordLink) {
+            Elements.forgotPasswordLink.addEventListener('click', async (e) => {
+                e.preventDefault();
+                const email = Elements.loginEmail.value.trim();
+                if (!email) {
+                    Renderer.showToast('Enter your email above, then click Forgot Password', 'warning');
+                    Elements.loginEmail.focus();
+                    return;
+                }
+                const result = await RCAuth.sendPasswordReset(email);
+                if (result.success) {
+                    Renderer.showToast('Password reset email sent! Check your inbox.', 'success');
+                } else {
+                    Renderer.showToast(result.error, 'error');
+                }
+            });
+        }
+
+        // Guest-to-account conversion button
+        if (Elements.guestConvertBtn) {
+            Elements.guestConvertBtn.addEventListener('click', () => {
+                // Switch to the login screen with signup tab active
                 Renderer.showScreen('login');
-            }, 1000);
+                const signupTab = document.querySelector('.tab-btn[data-tab="signup"]');
+                if (signupTab) signupTab.click();
+                Renderer.showToast('Create an account to save your progress permanently', 'info');
+            });
+        }
+        
+        // Logout — Firebase sign out
+        Elements.logoutBtn.addEventListener('click', async () => {
+            const result = await RCAuth.logOut();
+            if (result.success) {
+                GameState.clearStorage();
+                Renderer.showToast('Logged out successfully', 'success');
+                // onAuthStateChanged will navigate to login
+            } else {
+                Renderer.showToast(result.error, 'error');
+            }
         });
+
+        // OTP events (kept for legacy / phone-based OTP if re-enabled later)
+        this.initOTPInputEvents();
+    },
+    
+    initOTPInputEvents: function() {
+        if (!Elements.otpDigits || Elements.otpDigits.length === 0) return;
+
+        Elements.otpDigits.forEach((digit) => {
+            if (!digit || digit.dataset.listenersAttached === 'true') return;
+
+            digit.dataset.listenersAttached = 'true';
+            digit.setAttribute('inputmode', 'numeric');
+            digit.setAttribute('autocomplete', 'one-time-code');
+
+            digit.addEventListener('input', (e) => {
+                const value = String(e.target.value || '').replace(/\D/g, '');
+                e.target.value = value.slice(0, 1);
+
+                if (e.target.value && Array.from(Elements.otpDigits).indexOf(e.target) < Elements.otpDigits.length - 1) {
+                    Elements.otpDigits[Array.from(Elements.otpDigits).indexOf(e.target) + 1].focus();
+                }
+
+                const completeOTP = Array.from(Elements.otpDigits).map(d => d.value).join('');
+                Elements.verifyOtpBtn.disabled = completeOTP.length !== CONFIG.OTP_LENGTH;
+            });
+
+            digit.addEventListener('keydown', (e) => {
+                if (e.key === 'Backspace' && !e.target.value && Array.from(Elements.otpDigits).indexOf(e.target) > 0) {
+                    Elements.otpDigits[Array.from(Elements.otpDigits).indexOf(e.target) - 1].focus();
+                }
+            });
+        });
+
+        const completeOTP = Array.from(Elements.otpDigits).map(d => d.value).join('');
+        Elements.verifyOtpBtn.disabled = completeOTP.length !== CONFIG.OTP_LENGTH;
     },
     
     // Game events
@@ -1428,11 +1535,10 @@ const EventHandlers = {
             Renderer.updateGameScreen();
             Renderer.showToast('Answer submitted!', 'success');
         } else if (result === 'complete') {
-            Renderer.updateRoundCompleteScreen();
+            const roundResults = Renderer.updateRoundCompleteScreen();
             Renderer.showScreen('roundComplete');
             
             // Show completion message
-            const roundResults = GameState.calculateRoundScore();
             const message = roundResults.correctCount === CONFIG.QUESTIONS_PER_ROUND
                 ? 'Perfect round! 🎉'
                 : `Round complete! You got ${roundResults.correctCount}/10 correct.`;
@@ -1456,51 +1562,146 @@ const EventHandlers = {
 // ============================================
 // INITIALIZATION
 // ============================================
-function initApp() {
-    // Initialize game state
-    GameState.init();
-    
-    // Initialize event handlers
-    EventHandlers.init();
-    
-    // Simulate loading
+const MIN_LOADING_TIME = 2500; // 2.5 seconds minimum loading display
+
+function hideLoadingScreen() {
+    const loader = document.getElementById('loading-screen');
+    if (!loader) return;
+
+    loader.classList.add('fade-out');
+    document.body.classList.remove('loading-lock');
     setTimeout(() => {
-        // Check if user is logged in
-        if (GameState.session.isLoggedIn) {
-            Renderer.showScreen('intro');
-            Renderer.updateIntroScreen();
-        } else {
-            Renderer.showScreen('login');
-        }
-        
-        // Hide loading screen
-        Elements.loadingScreen.classList.remove('active');
-        
-        // Show welcome message
-        setTimeout(() => {
-            Renderer.showToast('Welcome to Riddle Crest Pro!', 'info');
-        }, 500);
-    }, 1500);
-    
-    // Add service worker support notification
-    if ('serviceWorker' in navigator) {
-        Renderer.showToast('App is ready for offline use!', 'success', 5000);
+        loader.remove();
+    }, 600); // match CSS transition duration
+}
+
+// Sync GameState.session from a Firebase user object (or null on logout)
+function syncSessionFromFirebaseUser(user) {
+    if (user) {
+        GameState.session.userId = user.uid;
+        GameState.session.email = user.email || null;
+        GameState.session.isGuest = user.isAnonymous;
+        GameState.session.isLoggedIn = true;
+        GameState.session.otpVerified = user.emailVerified || false;
+        GameState.session.sessionStart = GameState.session.sessionStart || Date.now();
+    } else {
+        GameState.session.userId = null;
+        GameState.session.email = null;
+        GameState.session.isGuest = true;
+        GameState.session.isLoggedIn = false;
+        GameState.session.otpVerified = false;
     }
-    
+}
+
+// Show/hide the guest-convert banner on the intro screen
+function updateGuestConvertBanner() {
+    if (Elements.guestConvertBanner) {
+        const show = GameState.session.isLoggedIn && GameState.session.isGuest;
+        Elements.guestConvertBanner.style.display = show ? 'flex' : 'none';
+    }
+}
+
+// Called by onAuthStateChanged — handles screen navigation after auth events
+let _authFirstFire = true; // tracks whether this is the initial auth check
+async function handleAuthStateChange(user) {
+    syncSessionFromFirebaseUser(user);
+
+    // Load persisted progress for the (new) user
+    await GameState.loadFromStorage();
+
+    // Initialize round replays if missing
+    for (let i = 1; i <= CONFIG.TOTAL_ROUNDS; i++) {
+        if (!GameState.roundReplays[i]) {
+            GameState.roundReplays[i] = 0;
+        }
+    }
+
+    if (_authFirstFire) {
+        // First fire — loading screen is still visible.
+        // We don't navigate here; the window.load handler will do that
+        // after the minimum loading time elapses.
+        _authFirstFire = false;
+        return;
+    }
+
+    // Subsequent fires (login, logout, guest login, etc.)
+    if (user) {
+        Renderer.showScreen('intro');
+        Renderer.updateIntroScreen();
+        updateGuestConvertBanner();
+    } else {
+        Renderer.showScreen('login');
+    }
+}
+
+async function initializeApp() {
+    // Initialize event handlers (does NOT depend on auth state)
+    EventHandlers.init();
+
     // Handle beforeunload to save state
     window.addEventListener('beforeunload', () => {
         GameState.saveToStorage();
     });
-    
+
     // Handle page visibility changes
     document.addEventListener('visibilitychange', () => {
         if (document.hidden) {
             GameState.saveToStorage();
         }
     });
+
+    // Start listening for Firebase auth state changes.
+    // The first fire will happen almost immediately and will populate
+    // GameState.session so the window.load handler can decide the screen.
+    if (typeof RCAuth !== 'undefined') {
+        RCAuth.onAuthStateChanged(handleAuthStateChange);
+    } else {
+        // Fallback: no Firebase — use localStorage session
+        await GameState.init();
+    }
 }
 
 // ============================================
 // START THE APPLICATION
 // ============================================
-document.addEventListener('DOMContentLoaded', initApp);
+window.addEventListener('load', async () => {
+    const start = Date.now();
+
+    await initializeApp();
+
+    // Wait for the first auth state callback to have fired
+    // (it fires synchronously on the same tick if there's a cached user,
+    //  but may need a moment if verifying a token)
+    const waitForAuth = () => new Promise((resolve) => {
+        const check = () => {
+            if (!_authFirstFire) { resolve(); return; }
+            // Also resolve if RCAuth is unavailable (pure localStorage mode)
+            if (typeof RCAuth === 'undefined') { resolve(); return; }
+            setTimeout(check, 50);
+        };
+        check();
+    });
+    await waitForAuth();
+
+    const elapsed = Date.now() - start;
+    const remaining = Math.max(0, MIN_LOADING_TIME - elapsed);
+
+    setTimeout(() => {
+        // Activate the target screen behind the loader
+        if (GameState.session.isLoggedIn) {
+            Renderer.showScreen('intro');
+            Renderer.updateIntroScreen();
+            updateGuestConvertBanner();
+        } else {
+            Renderer.showScreen('login');
+        }
+
+        // Fade out loader to reveal the screen underneath
+        hideLoadingScreen();
+
+        // Show welcome message after fade completes
+        setTimeout(() => {
+            Renderer.showToast('Welcome to Riddle Crest Pro!', 'info');
+        }, 500);
+    }, remaining);
+});

@@ -17,11 +17,7 @@
       "INTERNET",
       "ACCESS_NETWORK_STATE"
     ],
-    "icon": "icons/icon-512.png",
-    "adaptiveIcon": {
-      "foreground": "icons/icon-foreground.png",
-      "background": "icons/icon-background.png"
-    },
+    "icon": "icons/icon-512.svg",
     "splashScreen": {
       "backgroundColor": "#1a1a2e",
       "resizeable": false
@@ -30,7 +26,7 @@
   "ios": {
     "bundleIdentifier": "com.yourcompany.riddlecrest",
     "version": "1.0.0",
-    "icon": "icons/icon-1024.png",
+    "icon": "icons/icon-512.svg",
     "splashScreen": {
       "backgroundColor": "#1a1a2e"
     }

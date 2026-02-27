@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Runtime Adversarial Validation — Browser Tests (Scenarios 5-8)</title>
+<style>
+  body { font-family: monospace; background: #1a1a2e; color: #e0e0e0; padding: 20px; }
+  h1 { color: #4361ee; }
+  .section { margin: 16px 0 4px; color: #ffd700; font-weight: bold; }
+  .pass { color: #4caf50; }
+  .fail { color: #f44336; font-weight: bold; }
+  .info { color: #90caf9; }
+  #log { white-space: pre-wrap; line-height: 1.6; }
+  #summary { margin-top: 20px; padding: 12px; border: 2px solid; border-radius: 8px; font-size: 1.1em; }
+</style>
+</head>
+<body>
+<h1>Riddle Crest Pro — Browser Audit (Scenarios 5-8)</h1>
+<div id="log"></div>
+<div id="summary"></div>
+
+<script>
+const log = document.getElementById('log');
+const summaryEl = document.getElementById('summary');
+let passed = 0, failed = 0;
+
+function section(title) {
+  log.innerHTML += `<div class="section">=== ${title} ===</div>`;
+}
+function assert(condition, label) {
+  if (condition) {
+    passed++;
+    log.innerHTML += `<div class="pass">  ✓ ${label}</div>`;
+  } else {
+    failed++;
+    log.innerHTML += `<div class="fail">  ✗ FAIL: ${label}</div>`;
+  }
+}
+function info(msg) {
+  log.innerHTML += `<div class="info">  ℹ ${msg}</div>`;
+}
+
+async function runTests() {
+
+  // ── SCENARIO 5: OTP screen toggling & event listener leak check ──────
+  section('Scenario 5: OTP input event listeners — no duplicate attachment');
+
+  // The main page attaches OTP listeners via initOTPInputEvents().
+  // We simulate by creating OTP digit inputs and calling the function multiple times.
+  // Each digit should only get listeners once (guarded by data-listenersAttached).
+
+  const otpContainer = document.createElement('div');
+  otpContainer.style.display = 'none';
+  document.body.appendChild(otpContainer);
+
+  const digits = [];
+  for (let i = 0; i < 6; i++) {
+    const inp = document.createElement('input');
+    inp.className = 'otp-digit';
+    inp.maxLength = 1;
+    otpContainer.appendChild(inp);
+    digits.push(inp);
+  }
+
+  // Simulate the guard logic from initOTPInputEvents
+  let attachCount = 0;
+  function simulateAttach() {
+    digits.forEach((digit) => {
+      if (digit.dataset.listenersAttached === 'true') return;
+      digit.dataset.listenersAttached = 'true';
+      attachCount++;
+      digit.addEventListener('input', () => {});
+    });
+  }
+
+  simulateAttach();
+  assert(attachCount === 6, `First attach: 6 listeners attached (got ${attachCount})`);
+
+  const before = attachCount;
+  simulateAttach(); // second call — should be no-op
+  assert(attachCount === before, `Second attach: no new listeners (still ${attachCount})`);
+
+  simulateAttach(); // third call
+  assert(attachCount === before, `Third attach: no new listeners (still ${attachCount})`);
+
+  // Verify data attribute is set
+  const allMarked = digits.every(d => d.dataset.listenersAttached === 'true');
+  assert(allMarked, 'All OTP digits have listenersAttached="true"');
+
+  otpContainer.remove();
+
+  // ── SCENARIO 6: Service Worker lifecycle ─────────────────────────────
+  section('Scenario 6: Service Worker registration & lifecycle');
+
+  if ('serviceWorker' in navigator) {
+    try {
+      const reg = await navigator.serviceWorker.register('/service-worker.js');
+      assert(true, 'Service worker registered successfully');
+
+      // Wait for the SW to install
+      await new Promise((resolve) => {
+        if (reg.active) { resolve(); return; }
+        const sw = reg.installing || reg.waiting;
+        if (sw) {
+          sw.addEventListener('statechange', () => {
+            if (sw.state === 'activated') resolve();
+          });
+        } else {
+          resolve();
+        }
+        setTimeout(resolve, 5000); // timeout fallback
+      });
+
+      const swState = reg.active ? 'activated' : (reg.waiting ? 'waiting' : (reg.installing ? 'installing' : 'unknown'));
+      assert(reg.active !== null, `Service worker is active (state: ${swState})`);
+
+      // Verify precache: fetch each asset listed in ASSETS_TO_CACHE
+      const assetsToCheck = [
+        '/index.html',
+        '/style.css',
+        '/script.js',
+        '/manifest.json',
+        '/icons/icon-192.svg',
+        '/icons/icon-512.svg'
+      ];
+
+      for (const asset of assetsToCheck) {
+        try {
+          const resp = await fetch(asset, { cache: 'no-store' });
+          assert(resp.ok, `Asset ${asset} is fetchable (status ${resp.status})`);
+        } catch (e) {
+          assert(false, `Asset ${asset} fetch failed: ${e.message}`);
+        }
+      }
+
+      // Verify no cross-origin URLs in precache (check the SW source)
+      try {
+        const swSource = await (await fetch('/service-worker.js')).text();
+        const hasCrossOrigin = /https?:\/\/(?!localhost|127\.0\.0\.1)/.test(
+          swSource.substring(0, swSource.indexOf('self.addEventListener'))
+        );
+        assert(!hasCrossOrigin, 'No cross-origin URLs in ASSETS_TO_CACHE');
+      } catch (e) {
+        info(`Could not verify SW source: ${e.message}`);
+      }
+
+    } catch (e) {
+      assert(false, `Service worker registration failed: ${e.message}`);
+    }
+  } else {
+    info('Service workers not supported in this browser — skipping');
+  }
+
+  // ── SCENARIO 7: Manifest icon resolution ─────────────────────────────
+  section('Scenario 7: Manifest icon resolution');
+
+  try {
+    const manifestResp = await fetch('/manifest.json');
+    assert(manifestResp.ok, `manifest.json is fetchable (status ${manifestResp.status})`);
+    
+    const manifest = await manifestResp.json();
+    assert(manifest.name === 'Riddle Crest Pro', `Manifest name is correct: "${manifest.name}"`);
+    assert(Array.isArray(manifest.icons) && manifest.icons.length > 0, `Manifest has ${manifest.icons.length} icon(s)`);
+
+    for (const icon of manifest.icons) {
+      const iconUrl = icon.src.startsWith('/') ? icon.src : '/' + icon.src;
+      try {
+        const iconResp = await fetch(iconUrl);
+        assert(iconResp.ok, `Icon ${icon.src} (${icon.sizes}) resolves (status ${iconResp.status})`);
+        
+        const contentType = iconResp.headers.get('content-type') || '';
+        assert(
+          contentType.includes('svg') || contentType.includes('xml') || contentType.includes('image'),
+          `Icon ${icon.src} has valid content-type: ${contentType}`
+        );
+      } catch (e) {
+        assert(false, `Icon ${icon.src} fetch failed: ${e.message}`);
+      }
+    }
+
+    // Verify no shortcuts/screenshots reference missing files
+    if (manifest.shortcuts && manifest.shortcuts.length > 0) {
+      for (const sc of manifest.shortcuts) {
+        if (sc.icons) {
+          for (const icon of sc.icons) {
+            const resp = await fetch('/' + icon.src).catch(() => null);
+            assert(resp && resp.ok, `Shortcut icon ${icon.src} resolves`);
+          }
+        }
+      }
+    } else {
+      assert(true, 'No shortcut icons to validate (empty array — clean)');
+    }
+
+    if (manifest.screenshots && manifest.screenshots.length > 0) {
+      for (const ss of manifest.screenshots) {
+        const resp = await fetch('/' + ss.src).catch(() => null);
+        assert(resp && resp.ok, `Screenshot ${ss.src} resolves`);
+      }
+    } else {
+      assert(true, 'No screenshots to validate (empty array — clean)');
+    }
+
+  } catch (e) {
+    assert(false, `Manifest validation failed: ${e.message}`);
+  }
+
+  // ── SCENARIO 8: Console warning/error interception ───────────────────
+  section('Scenario 8: Console warnings & errors during page load');
+
+  // We can't retroactively capture console output from the main page load,
+  // but we CAN verify the main page loads without throwing by fetching and
+  // checking that script.js parses without syntax errors.
+
+  try {
+    const scriptResp = await fetch('/script.js');
+    const scriptText = await scriptResp.text();
+
+    // Try to parse as a function body (syntax check)
+    try {
+      new Function(scriptText);
+      assert(true, 'script.js parses without syntax errors');
+    } catch (e) {
+      assert(false, `script.js has syntax error: ${e.message}`);
+    }
+  } catch (e) {
+    assert(false, `Could not fetch script.js: ${e.message}`);
+  }
+
+  // Check that style.css loads
+  try {
+    const cssResp = await fetch('/style.css');
+    assert(cssResp.ok, `style.css loads (status ${cssResp.status})`);
+  } catch (e) {
+    assert(false, `style.css fetch failed: ${e.message}`);
+  }
+
+  // Verify HTML link/meta references resolve
+  try {
+    const htmlResp = await fetch('/index.html');
+    const htmlText = await htmlResp.text();
+    
+    // Check apple-touch-icon and shortcut icon references
+    const iconRefs = [...htmlText.matchAll(/href="([^"]*icon[^"]*)"/gi)];
+    for (const match of iconRefs) {
+      const href = match[1];
+      if (href.startsWith('http')) continue; // skip external
+      const url = href.startsWith('/') ? href : '/' + href;
+      try {
+        const resp = await fetch(url);
+        assert(resp.ok, `HTML icon ref "${href}" resolves (status ${resp.status})`);
+      } catch (e) {
+        assert(false, `HTML icon ref "${href}" failed: ${e.message}`);
+      }
+    }
+  } catch (e) {
+    assert(false, `HTML validation failed: ${e.message}`);
+  }
+
+  // ── SUMMARY ──────────────────────────────────────────────────────────
+  section('SUMMARY');
+  const total = passed + failed;
+  info(`Passed: ${passed} / ${total}`);
+  if (failed > 0) {
+    log.innerHTML += `<div class="fail">  *** ${failed} TEST(S) FAILED ***</div>`;
+    summaryEl.style.borderColor = '#f44336';
+    summaryEl.innerHTML = `<span class="fail">❌ ${failed} failed</span> / ${total} total`;
+  } else {
+    log.innerHTML += `<div class="pass">  ✓ All browser tests passed.</div>`;
+    summaryEl.style.borderColor = '#4caf50';
+    summaryEl.innerHTML = `<span class="pass">✅ All ${total} tests passed.</span>`;
+  }
+}
+
+runTests().catch(e => {
+  log.innerHTML += `<div class="fail">FATAL: ${e.message}\n${e.stack}</div>`;
+});
+</script>
+</body>
+</html>

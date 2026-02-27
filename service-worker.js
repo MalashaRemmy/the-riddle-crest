@@ -5,10 +5,8 @@ const ASSETS_TO_CACHE = [
   '/style.css',
   '/script.js',
   '/manifest.json',
-  '/icons/icon-192.png',
-  '/icons/icon-512.png',
-  'https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css',
-  'https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700&display=swap'
+  '/icons/icon-192.svg',
+  '/icons/icon-512.svg'
 ];
 
 // Install event
@@ -86,8 +84,8 @@ self.addEventListener('push', (event) => {
   const data = event.data.json();
   const options = {
     body: data.body,
-    icon: '/icons/icon-192.png',
-    badge: '/icons/icon-72.png',
+    icon: '/icons/icon-192.svg',
+    badge: '/icons/icon-192.svg',
     vibrate: [100, 50, 100],
     data: {
       url: data.url || '/'

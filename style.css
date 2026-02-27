@@ -91,15 +91,22 @@ p { font-size: 1rem; color: var(--text-secondary); }
 /* Utility Classes */
 .screen {
     display: none;
+    position: fixed;
+    inset: 0;
     width: 100%;
-    min-height: 100vh;
+    height: 100%;
     padding: var(--spacing-lg);
     padding-bottom: calc(60px + var(--safe-bottom));
+    overflow-y: auto;
+    background: linear-gradient(135deg, var(--bg-primary) 0%, var(--bg-secondary) 100%);
     animation: fadeIn 0.5s ease-out;
+    z-index: 1;
 }
 
 .screen.active {
-    display: block;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
 }
 
 .card {
@@ -114,12 +121,29 @@ p { font-size: 1rem; color: var(--text-secondary); }
     max-width: 600px;
 }
 
+/* Scroll lock during loading */
+body.loading-lock {
+    overflow: hidden;
+}
+
 /* Loading Screen */
 #loading-screen {
-    display: flex;
-    align-items: center;
     justify-content: center;
     background: var(--bg-primary);
+    transition: opacity 0.6s ease-out;
+    z-index: 9999;
+}
+
+#loading-screen.fade-out {
+    opacity: 0;
+    pointer-events: none;
+}
+
+/* Auth & OTP screens: centered in viewport */
+#login-screen,
+#otp-screen {
+    justify-content: center;
+    padding-bottom: var(--spacing-lg);
 }
 
 .loading-container {
@@ -281,6 +305,71 @@ p { font-size: 1rem; color: var(--text-secondary); }
     margin-top: var(--spacing-lg);
     padding-top: var(--spacing-lg);
     border-top: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+/* Forgot password link */
+.forgot-password {
+    text-align: right;
+    margin-top: calc(-1 * var(--spacing-sm));
+    margin-bottom: var(--spacing-sm);
+    font-size: 0.85rem;
+}
+
+/* Auth button loading state */
+.auth-btn.loading {
+    opacity: 0.7;
+    pointer-events: none;
+    position: relative;
+}
+
+.auth-btn.loading::after {
+    content: '';
+    width: 18px;
+    height: 18px;
+    border: 2px solid rgba(255, 255, 255, 0.3);
+    border-top-color: white;
+    border-radius: 50%;
+    animation: spin 0.6s linear infinite;
+    margin-left: var(--spacing-xs);
+    display: inline-block;
+    vertical-align: middle;
+}
+
+/* Guest-to-account conversion banner */
+.guest-convert-banner {
+    margin-top: var(--spacing-lg);
+    padding: var(--spacing-md);
+    background: rgba(67, 97, 238, 0.08);
+    border: 1px solid rgba(67, 97, 238, 0.25);
+    border-radius: var(--radius-md);
+}
+
+.convert-content {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--spacing-sm);
+    margin-bottom: var(--spacing-md);
+}
+
+.convert-content i {
+    font-size: 1.5rem;
+    color: var(--primary);
+    margin-top: 2px;
+}
+
+.convert-content h4 {
+    color: var(--text-primary);
+    margin-bottom: 2px;
+}
+
+.convert-content p {
+    font-size: 0.85rem;
+}
+
+/* Small button variant */
+.btn-sm {
+    padding: 0.6rem 1.2rem;
+    font-size: 0.9rem;
 }
 
 /* OTP Screen */
@@ -461,8 +550,9 @@ p { font-size: 1rem; color: var(--text-secondary); }
     padding: var(--spacing-md);
     border-radius: var(--radius-md);
     margin-bottom: var(--spacing-lg);
-    position: sticky;
-    top: var(--spacing-sm);
+    width: 100%;
+    max-width: 600px;
+    flex-shrink: 0;
     z-index: 10;
     box-shadow: var(--shadow-md);
 }
@@ -914,6 +1004,13 @@ p { font-size: 1rem; color: var(--text-secondary); }
     display: flex;
     justify-content: space-around;
     z-index: 100;
+    transition: transform 0.3s ease, opacity 0.3s ease;
+}
+
+.bottom-nav.hidden {
+    transform: translateY(100%);
+    opacity: 0;
+    pointer-events: none;
 }
 
 .nav-btn {
