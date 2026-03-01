@@ -5,8 +5,8 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 
-# Supabase config (contains API keys — use supabase-config.example.js as template)
-supabase-config.js
+# Supabase config template (real config is tracked — anon key is public by design)
+# supabase-config.js
 
 # Runtime data
 pids
