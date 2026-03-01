@@ -25,5 +25,9 @@
     "android": {
       "minVersion": "22"
     }
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.98.0",
+    "firebase": "^12.9.0"
   }
 }

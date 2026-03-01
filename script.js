@@ -362,7 +362,7 @@ const GameState = {
         lastPlayed: null
     },
     
-    // Initialize state (async because loadFromStorage may hit Firestore)
+    // Initialize state (async because loadFromStorage may hit Supabase)
     init: async function() {
         await this.loadFromStorage();
         this.session.sessionStart = Date.now();
@@ -594,7 +594,7 @@ const GameState = {
         this.saveToStorage();
     },
     
-    // Save state — writes to Firestore (via RCDatabase) and localStorage mirror.
+    // Save state — writes to Supabase (via RCDatabase) and localStorage mirror.
     // Called frequently (answer submit, round complete, etc.), so it's fire-and-forget.
     saveToStorage: function() {
         try {
@@ -607,10 +607,10 @@ const GameState = {
             };
             // Synchronous localStorage mirror (fast, offline-safe)
             localStorage.setItem(CONFIG.STORAGE_KEY, JSON.stringify(data));
-            // Async Firestore write (non-blocking)
+            // Async Supabase write (non-blocking)
             if (typeof RCDatabase !== 'undefined') {
                 RCDatabase.save(data).catch((e) => {
-                    console.warn('[GameState] Firestore save failed:', e.message);
+                    console.warn('[GameState] Supabase save failed:', e.message);
                 });
             }
         } catch (e) {
@@ -618,12 +618,12 @@ const GameState = {
         }
     },
     
-    // Load state — tries Firestore first (via RCDatabase), falls back to localStorage.
+    // Load state — tries Supabase first (via RCDatabase), falls back to localStorage.
     // Returns a Promise so callers can await the result.
     loadFromStorage: async function() {
         try {
             let data = null;
-            // Try Firestore first (returns localStorage fallback if offline)
+            // Try Supabase first (returns localStorage fallback if offline)
             if (typeof RCDatabase !== 'undefined') {
                 data = await RCDatabase.load();
             }
@@ -633,7 +633,7 @@ const GameState = {
                 if (raw) data = JSON.parse(raw);
             }
             if (data) {
-                // Restore game progress (not session — that's handled by Firebase Auth)
+                // Restore game progress (not session — that's handled by Supabase Auth)
                 this.currentRound = data.currentRound || this.currentRound;
                 this.roundReplays = data.roundReplays || this.roundReplays;
                 this.overallProgress = data.overallProgress || this.overallProgress;
@@ -643,12 +643,12 @@ const GameState = {
         }
     },
     
-    // Clear storage (logout) — removes Firestore data and localStorage
+    // Clear storage (logout) — removes Supabase data and localStorage
     clearStorage: function() {
         localStorage.removeItem(CONFIG.STORAGE_KEY);
         if (typeof RCDatabase !== 'undefined') {
             RCDatabase.deleteProgress().catch((e) => {
-                console.warn('[GameState] Firestore delete failed:', e.message);
+                console.warn('[GameState] Supabase delete failed:', e.message);
             });
         }
         this.session = {
@@ -1193,7 +1193,7 @@ const EventHandlers = {
         btn.classList.toggle('loading', loading);
     },
 
-    // Authentication events (Firebase Auth backed)
+    // Authentication events (Supabase Auth backed)
     initAuthEvents: function() {
         // Tab switching
         Elements.authTabs.forEach(tab => {
@@ -1218,7 +1218,7 @@ const EventHandlers = {
             });
         });
         
-        // Guest login via Firebase anonymous auth
+        // Guest login via local guest session
         Elements.guestLoginBtn.addEventListener('click', async () => {
             this._setAuthLoading(Elements.guestLoginBtn, true);
             const result = await RCAuth.guestLogin();
@@ -1232,7 +1232,7 @@ const EventHandlers = {
             }
         });
         
-        // Signup form submission — Firebase create account
+        // Signup form submission — Supabase create account
         Elements.signupForm.addEventListener('submit', async (e) => {
             e.preventDefault();
             
@@ -1273,7 +1273,7 @@ const EventHandlers = {
             }
         });
         
-        // Login form submission — Firebase email/password auth
+        // Login form submission — Supabase email/password auth
         Elements.loginForm.addEventListener('submit', async (e) => {
             e.preventDefault();
             
@@ -1327,7 +1327,7 @@ const EventHandlers = {
             });
         }
         
-        // Logout — Firebase sign out
+        // Logout — Supabase sign out
         Elements.logoutBtn.addEventListener('click', async () => {
             const result = await RCAuth.logOut();
             if (result.success) {
@@ -1575,12 +1575,14 @@ function hideLoadingScreen() {
     }, 600); // match CSS transition duration
 }
 
-// Sync GameState.session from a Firebase user object (or null on logout)
-function syncSessionFromFirebaseUser(user) {
+// Sync GameState.session from a Supabase/guest user object (or null on logout)
+// The user object is normalized by RCAuth._normalizeUser() or is a synthetic guest object.
+// Expected shape: { id, uid, email, isAnonymous, emailVerified }
+function syncSessionFromUser(user) {
     if (user) {
-        GameState.session.userId = user.uid;
+        GameState.session.userId = user.uid || user.id;
         GameState.session.email = user.email || null;
-        GameState.session.isGuest = user.isAnonymous;
+        GameState.session.isGuest = user.isAnonymous || false;
         GameState.session.isLoggedIn = true;
         GameState.session.otpVerified = user.emailVerified || false;
         GameState.session.sessionStart = GameState.session.sessionStart || Date.now();
@@ -1604,7 +1606,7 @@ function updateGuestConvertBanner() {
 // Called by onAuthStateChanged — handles screen navigation after auth events
 let _authFirstFire = true; // tracks whether this is the initial auth check
 async function handleAuthStateChange(user) {
-    syncSessionFromFirebaseUser(user);
+    syncSessionFromUser(user);
 
     // Load persisted progress for the (new) user
     await GameState.loadFromStorage();
@@ -1650,13 +1652,13 @@ async function initializeApp() {
         }
     });
 
-    // Start listening for Firebase auth state changes.
+    // Start listening for Supabase auth state changes.
     // The first fire will happen almost immediately and will populate
     // GameState.session so the window.load handler can decide the screen.
     if (typeof RCAuth !== 'undefined') {
         RCAuth.onAuthStateChanged(handleAuthStateChange);
     } else {
-        // Fallback: no Firebase — use localStorage session
+        // Fallback: no Supabase — use localStorage session
         await GameState.init();
     }
 }

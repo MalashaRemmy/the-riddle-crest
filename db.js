@@ -1,95 +1,111 @@
 // ============================================
-// DATABASE PERSISTENCE MODULE (Firestore)
+// DATABASE PERSISTENCE MODULE (Supabase)
 // ============================================
-// Handles all Firestore read/write operations for per-user
-// game progress. Falls back to localStorage when offline or
-// when no Firebase user is available (should not happen in
-// normal flow since even guests get an anonymous UID).
+// Handles all Supabase read/write operations for per-user
+// game progress. Falls back to localStorage when offline,
+// when the user is a local guest, or when no Supabase session
+// is available.
 //
-// Firestore document structure:
-//   /users/{uid}/gameData/progress
-//     {
-//       currentRound: number,
-//       roundReplays: object,
-//       overallProgress: object,
-//       session: object,       // app-level session metadata
-//       updatedAt: timestamp
-//     }
+// Supabase table: `game_progress`
+//   id          UUID  PRIMARY KEY  DEFAULT gen_random_uuid()
+//   user_id     UUID  NOT NULL  REFERENCES auth.users(id)
+//   data        JSONB NOT NULL  DEFAULT '{}'
+//   updated_at  TIMESTAMPTZ  DEFAULT now()
 //
-// Dependencies: firebase-config.js (provides firebaseDb, firebaseAuth globals)
+// Dependencies: supabase-config.js (provides `supabase` global)
+//               auth.js (provides `RCAuth` global — used to check guest state)
 // Consumed by: script.js (via the global RCDatabase object)
 // ============================================
 
 const RCDatabase = {
 
     // ------------------------------------------------
-    // SAVE — persist game progress to Firestore
+    // SAVE — persist game progress to Supabase
     // ------------------------------------------------
-    // Writes the provided data object to the authenticated user's
-    // gameData/progress document. Merges fields to avoid overwriting
-    // unrelated data. Falls back to localStorage on error.
+    // Upserts a row in the `game_progress` table keyed by user_id.
+    // Falls back to localStorage for guests or on error.
     async save(data) {
         try {
-            const user = firebaseAuth.currentUser;
+            // If local guest, only use localStorage
+            if (typeof RCAuth !== 'undefined' && RCAuth._isLocalGuest) {
+                this._saveToLocalStorage(data);
+                return;
+            }
+
+            const { data: sessionData } = await supabase.auth.getSession();
+            const user = sessionData?.session?.user;
             if (!user) {
                 this._saveToLocalStorage(data);
                 return;
             }
 
-            const docRef = firebaseDb
-                .collection('users').doc(user.uid)
-                .collection('gameData').doc('progress');
-
-            await docRef.set({
-                currentRound: data.currentRound,
-                roundReplays: data.roundReplays,
-                overallProgress: data.overallProgress,
-                session: {
-                    isGuest: user.isAnonymous,
-                    email: user.email || null,
-                    isLoggedIn: true
+            const payload = {
+                user_id: user.id,
+                data: {
+                    currentRound: data.currentRound,
+                    roundReplays: data.roundReplays,
+                    overallProgress: data.overallProgress,
+                    session: {
+                        isGuest: false,
+                        email: user.email || null,
+                        isLoggedIn: true
+                    }
                 },
-                updatedAt: firebase.firestore.FieldValue.serverTimestamp()
-            }, { merge: true });
+                updated_at: new Date().toISOString()
+            };
+
+            const { error } = await supabase
+                .from('game_progress')
+                .upsert(payload, { onConflict: 'user_id' });
+
+            if (error) throw error;
 
             // Also keep a localStorage mirror for fast offline access
             this._saveToLocalStorage(data);
         } catch (err) {
-            console.error('[DB] Firestore save failed, using localStorage:', err.message);
+            console.error('[DB] Supabase save failed, using localStorage:', err.message);
             this._saveToLocalStorage(data);
         }
     },
 
     // ------------------------------------------------
-    // LOAD — retrieve game progress from Firestore
+    // LOAD — retrieve game progress from Supabase
     // ------------------------------------------------
-    // Reads the authenticated user's progress document.
-    // Falls back to localStorage if Firestore is unavailable.
+    // Reads the authenticated user's progress row.
+    // Falls back to localStorage if Supabase is unavailable.
     // Returns: data object or null
     async load() {
         try {
-            const user = firebaseAuth.currentUser;
+            // If local guest, only use localStorage
+            if (typeof RCAuth !== 'undefined' && RCAuth._isLocalGuest) {
+                return this._loadFromLocalStorage();
+            }
+
+            const { data: sessionData } = await supabase.auth.getSession();
+            const user = sessionData?.session?.user;
             if (!user) {
                 return this._loadFromLocalStorage();
             }
 
-            const docRef = firebaseDb
-                .collection('users').doc(user.uid)
-                .collection('gameData').doc('progress');
+            const { data: rows, error } = await supabase
+                .from('game_progress')
+                .select('data')
+                .eq('user_id', user.id)
+                .limit(1)
+                .maybeSingle();
 
-            const doc = await docRef.get();
+            if (error) throw error;
 
-            if (doc.exists) {
-                const data = doc.data();
+            if (rows && rows.data) {
                 // Mirror to localStorage for offline access
-                this._saveToLocalStorage(data);
-                return data;
+                this._saveToLocalStorage(rows.data);
+                return rows.data;
             }
 
-            // No Firestore data — check localStorage for migrateable data
+            // No Supabase data — check localStorage for migrateable data
             return this._loadFromLocalStorage();
         } catch (err) {
-            console.warn('[DB] Firestore load failed, using localStorage:', err.message);
+            console.warn('[DB] Supabase load failed, using localStorage:', err.message);
             return this._loadFromLocalStorage();
         }
     },
@@ -100,55 +116,70 @@ const RCDatabase = {
     // Called on full game reset or account deletion.
     async deleteProgress() {
         try {
-            const user = firebaseAuth.currentUser;
+            if (typeof RCAuth !== 'undefined' && RCAuth._isLocalGuest) {
+                this._clearLocalStorage();
+                return;
+            }
+
+            const { data: sessionData } = await supabase.auth.getSession();
+            const user = sessionData?.session?.user;
             if (user) {
-                await firebaseDb
-                    .collection('users').doc(user.uid)
-                    .collection('gameData').doc('progress')
-                    .delete();
+                await supabase
+                    .from('game_progress')
+                    .delete()
+                    .eq('user_id', user.id);
             }
             this._clearLocalStorage();
         } catch (err) {
-            console.error('[DB] Firestore delete failed:', err.message);
+            console.error('[DB] Supabase delete failed:', err.message);
             this._clearLocalStorage();
         }
     },
 
     // ------------------------------------------------
-    // MIGRATE GUEST DATA — copy localStorage data to a new
-    // Firestore account after guest-to-account conversion.
-    // The UID doesn't change during linking, so normally
-    // the data is already under the correct UID. This method
-    // exists as a safety net to ensure data is in Firestore.
+    // MIGRATE GUEST DATA — copy localStorage data to
+    // Supabase after guest-to-account conversion.
     // ------------------------------------------------
     async migrateGuestData() {
         try {
             const localData = this._loadFromLocalStorage();
             if (!localData) return;
 
-            const user = firebaseAuth.currentUser;
+            const { data: sessionData } = await supabase.auth.getSession();
+            const user = sessionData?.session?.user;
             if (!user) return;
 
-            const docRef = firebaseDb
-                .collection('users').doc(user.uid)
-                .collection('gameData').doc('progress');
+            // Check if Supabase already has data for this user
+            const { data: existing, error: fetchErr } = await supabase
+                .from('game_progress')
+                .select('user_id')
+                .eq('user_id', user.id)
+                .limit(1)
+                .maybeSingle();
 
-            const existing = await docRef.get();
+            if (fetchErr) throw fetchErr;
 
-            // Only migrate if Firestore has no data yet
-            if (!existing.exists) {
-                await docRef.set({
-                    currentRound: localData.currentRound || 1,
-                    roundReplays: localData.roundReplays || {},
-                    overallProgress: localData.overallProgress || {},
-                    session: {
-                        isGuest: false,
-                        email: user.email || null,
-                        isLoggedIn: true
-                    },
-                    updatedAt: firebase.firestore.FieldValue.serverTimestamp()
-                });
-                console.log('[DB] Guest data migrated to Firestore.');
+            // Only migrate if no row exists yet
+            if (!existing) {
+                const { error } = await supabase
+                    .from('game_progress')
+                    .insert({
+                        user_id: user.id,
+                        data: {
+                            currentRound: localData.currentRound || 1,
+                            roundReplays: localData.roundReplays || {},
+                            overallProgress: localData.overallProgress || {},
+                            session: {
+                                isGuest: false,
+                                email: user.email || null,
+                                isLoggedIn: true
+                            }
+                        },
+                        updated_at: new Date().toISOString()
+                    });
+
+                if (error) throw error;
+                console.log('[DB] Guest data migrated to Supabase.');
             }
         } catch (err) {
             console.error('[DB] Guest data migration failed:', err.message);
